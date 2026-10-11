@@ -7,8 +7,9 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 
-REVISION = '2026.10.08-287.6'
+REVISION = '2026.10.11-289.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -187,6 +188,29 @@ def detach_pro_triggers(db):
         if re.fullmatch(r'lucx_shareonly_clients_(ins|del|link_update|client_update|client_delete|inbound_delete|rename_merge|inbound_update)', name):
             db.execute('DROP TRIGGER "' + name + '"')
     db.commit()
+
+
+def native_client_fix(root):
+    """LucX 288 fixes share-only client operations in its own service layer."""
+    binary = root / 'usr/local/x-ui/x-ui'
+    if not binary.is_file():
+        if root == Path('/'):
+            raise RuntimeError('Installed panel binary is missing; client policy cannot be selected')
+        return False  # Offline legacy fixtures/archives without a panel binary.
+    result = subprocess.run([str(binary), '-v'], capture_output=True, text=True, timeout=15)
+    match = re.search(r'\bv?(\d+)\.(\d+)\.(\d+)-lucx\.(\d+)\b', result.stdout)
+    if result.returncode or not match:
+        raise RuntimeError('Cannot identify installed LucX version; client settings unchanged')
+    return tuple(map(int, match.groups())) >= (3, 9, 0, 288)
+
+
+def apply_client_policy(db, root):
+    if native_client_fix(root):
+        detach_pro_triggers(db)
+        print('Client operations: native panel fix (288+); Pro triggers retired.')
+    else:
+        sync_clients(db)
+        print('Client operations: legacy Pro compatibility triggers retained.')
 
 
 def probe_clients(db):
@@ -650,7 +674,7 @@ def repair_rkn_timers(root):
 
 def migrate(root, clients_only=False):
     with closing(sqlite3.connect(root / 'etc/x-ui/x-ui.db', timeout=30)) as db, db:
-        sync_clients(db)
+        apply_client_policy(db, root)
         if clients_only:
             return
         settings = dict(db.execute('SELECT key,value FROM settings ORDER BY id'))
@@ -691,7 +715,7 @@ def inspect(root):
         ('Сайт заглушка', 'var/lib/lucx-ui-preinstall/cover-generator.json'),
     ):
         print(f'{name}: {"есть" if (root / relative).exists() else "нет"}')
-    print('Правки: связи клиентов, native Clash provider, TLS панели, исключение BBR из AWG, таймеры RKN.')
+    print('Правки: связи клиентов только до 288, native Clash provider, TLS панели, исключение BBR из AWG, таймеры RKN.')
     print('UFW allow routed сохраняется; правила CSQTT обслуживает панель.')
     print('Аккаунты, порты, DNS и содержимое сайта сохраняются.')
 
@@ -721,7 +745,10 @@ def main():
     elif args.action in ('probe', 'prepare-update'):
         with closing(sqlite3.connect(root / 'etc/x-ui/x-ui.db', timeout=30)) as db:
             if args.action == 'probe':
-                probe_clients(db)
+                if native_client_fix(root):
+                    print('Client operations: native panel fix; legacy trigger probe not required.')
+                else:
+                    probe_clients(db)
             else:
                 detach_pro_triggers(db)
     elif args.action == 'firewall':
