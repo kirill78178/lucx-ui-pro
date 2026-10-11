@@ -9,7 +9,7 @@ import re
 import sqlite3
 import subprocess
 
-REVISION = '2026.10.11-289.1'
+REVISION = '2026.10.11-289.2'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3

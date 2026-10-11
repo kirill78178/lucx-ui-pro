@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.11-289.1"
+PRO_COMPAT_REVISION="2026.10.11-289.2"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -916,7 +916,7 @@ PY_NO_DOWNGRADE
         "https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/$script_commit/assets/backup/lucx-ui-backup.sh" \
         -o "$stage/backup.sh" || return 1
     bash -n "$stage/backup.sh" || return 1
-    bash "$stage/backup.sh" backup || return 1
+    bash "$stage/backup.sh" backup --automatic-update || return 1
     msg_inf 'Полный backup сохранён в /var/backups/x-ui. Выполняются миграции.'
     local -a snapshot_entries=(/etc/x-ui /etc/nginx /etc/ufw /etc/default/ufw /etc/sysctl.d
         /usr/local/x-ui /usr/bin/x-ui /usr/local/lib/lucx-ui-pro
@@ -2941,7 +2941,7 @@ import re
 import sqlite3
 import subprocess
 
-REVISION = '2026.10.11-289.1'
+REVISION = '2026.10.11-289.2'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3

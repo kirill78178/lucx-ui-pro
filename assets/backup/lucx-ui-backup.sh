@@ -319,12 +319,55 @@ persist_current_qdisc_module() {
 }
 
 # ── backup ────────────────────────────────────────────────────────────────────
+register_automatic_update_backup() {
+    python3 - "$1" <<'PY_AUTO_UPDATE_BACKUPS'
+from pathlib import Path
+import fcntl, os, re, sys
+
+archive = Path(sys.argv[1])
+folder = archive.parent
+pattern = r'lucx-ui-backup-\d{8}-\d{6}-\d+-auto-update\.tar\.gz'
+owner = 'lucx-ui-pro:automatic-update-backup:v1\n'
+if not re.fullmatch(pattern, archive.name) or archive.is_symlink() or not archive.is_file():
+    raise SystemExit('Invalid automatic update backup')
+with (folder / '.automatic-update-backups.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    marker = Path(str(archive) + '.auto-update')
+    temporary = Path(str(marker) + '.' + str(os.getpid()) + '.tmp')
+    temporary.write_text(owner)
+    temporary.chmod(0o600)
+    temporary.replace(marker)
+    candidates = []
+    for path in folder.glob('lucx-ui-backup-*-auto-update.tar.gz'):
+        tag = Path(str(path) + '.auto-update')
+        if not re.fullmatch(pattern, path.name) or path.is_symlink() or not path.is_file():
+            continue
+        if tag.is_symlink() or not tag.is_file() or tag.read_text() != owner:
+            continue
+        candidates.append(path)
+    candidates.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    # Always retain this newly completed backup, even if the system clock changed.
+    keep = {archive, *[path for path in candidates if path != archive][:2]}
+    for path in candidates:
+        if path in keep:
+            continue
+        path.unlink()
+        for suffix in ('.sha256', '.auto-update'):
+            sidecar = Path(str(path) + suffix)
+            if sidecar.is_file() and not sidecar.is_symlink():
+                sidecar.unlink()
+        print('==> Removed old automatic update backup: ' + path.name)
+PY_AUTO_UPDATE_BACKUPS
+}
+
 cmd_backup() {
     require_root
 
-    local ts name staging dest
+    local ts name staging dest automatic="${1:-}"
+    [[ -z "$automatic" || "$automatic" == --automatic-update ]] || die "Unknown backup option"
     ts=$(date +%Y%m%d-%H%M%S)
     name="lucx-ui-backup-${ts}"
+    [[ "$automatic" != --automatic-update ]] || name="lucx-ui-backup-${ts}-$$-auto-update"
 
     # estimate size and verify free space before touching anything:
     # staging holds an uncompressed copy, the archive lands next to it
@@ -420,6 +463,14 @@ JSON
     mv -f "${dest}.partial" "$dest"
     chmod 0600 "$dest"
     (cd "$BACKUP_STORE" && sha256sum "$(basename "$dest")" > "$(basename "$dest").sha256")
+
+    if [[ "$automatic" == --automatic-update ]]; then
+        # Retire only registered automatic backups, after the new archive is readable.
+        tar -tzf "$dest" >/dev/null || die "Automatic backup validation failed; older backups retained"
+        if ! register_automatic_update_backup "$dest"; then
+            blue "==> Automatic backup cleanup incomplete; backup retained."
+        fi
+    fi
 
     local size
     size=$(du -sh "${dest}" | cut -f1)
@@ -1565,7 +1616,7 @@ import re
 import sqlite3
 import subprocess
 
-REVISION = '2026.10.11-289.1'
+REVISION = '2026.10.11-289.2'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -2877,7 +2928,7 @@ cmd_list() {
 
 # ── entry point ───────────────────────────────────────────────────────────────
 case "${1:-}" in
-    backup)  cmd_backup ;;
+    backup)  cmd_backup "${2:-}" ;;
     restore) cmd_restore "${2:-}" ;;
     list)    cmd_list ;;
     *)
