@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.11-289.2"
+PRO_COMPAT_REVISION="2026.10.13-291.1"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -2940,8 +2940,9 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.11-289.2'
+REVISION = '2026.10.13-291.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -3465,6 +3466,77 @@ def provider_route(settings):
 '''
 
 
+def repair_subscription_exports(root, db, settings):
+    """Publish native exports through our proxy; never invent protocol formats."""
+    state = root / 'var/lib/lucx-ui-preinstall'
+    snippet = root / 'etc/nginx/snippets/includes.conf'
+    if not (state / 'owned-by-lucx-ui-pro').is_file() or not snippet.is_file():
+        return
+    domains_file = state / 'domains'
+    domains = domains_file.read_text().splitlines()[:2] if domains_file.is_file() else []
+    try:
+        base = urlsplit(settings.get('subURI', ''))
+        if base.scheme != 'https' or base.hostname not in domains or base.port not in (None, 443):
+            return
+    except ValueError:
+        return  # A custom URL is not a reason to block unrelated maintenance.
+    origin = urlunsplit((base.scheme, base.netloc, '', '', ''))
+    updates = {}
+    awg_path = '/' + settings.get('subAwgPath', '/awg/').strip('/') + '/'
+    if re.fullmatch(r'/[A-Za-z0-9_-]+/', awg_path):
+        current = settings.get('subAwgURI', '')
+        internal = False
+        try:
+            parsed = urlsplit(current)
+            internal = parsed.hostname in domains and parsed.port == int(settings.get('subPort', 2096))
+        except ValueError:
+            pass
+        if not current or internal:
+            updates['subAwgURI'] = origin + awg_path
+        text = snippet.read_text(encoding='utf-8')
+        marker = r'    # LUCX PRO native AWG export BEGIN\n.*?    # LUCX PRO native AWG export END\n'
+        existing = re.search(marker, text, re.S)
+        scheme = 'https' if settings.get('subCertFile') and settings.get('subKeyFile') else 'http'
+        route = f'''    # LUCX PRO native AWG export BEGIN
+    location ^~ {awg_path} {{
+        if ($hack = 1) {{ return 404; }}
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+        proxy_pass {scheme}://127.0.0.1:{int(settings.get('subPort', 2096))};
+    }}
+    # LUCX PRO native AWG export END
+'''
+        if existing:
+            block = existing[0]
+            block = re.sub(r'(?m)^    location \^~ [^\s]+ \{$', '    location ^~ ' + awg_path + ' {', block)
+            block = re.sub(r'(?m)^        proxy_pass [^\n]+$',
+                           '        proxy_pass ' + scheme + '://127.0.0.1:' + str(int(settings.get('subPort', 2096))) + ';', block)
+            repaired = text[:existing.start()] + block + text[existing.end():]
+        elif re.search(r'\blocation\s+(?:(?:\^~|=)\s+)?' + re.escape(awg_path) + r'\s*\{', text):
+            repaired = text  # An unmarked user location already owns this path.
+        else:
+            repaired = route + text
+        if repaired != text:
+            snippet.write_text(repaired, encoding='utf-8')
+    json_path = '/' + settings.get('subJsonPath', '/json/').strip('/') + '/'
+    if re.fullmatch(r'/[A-Za-z0-9_-]+/', json_path):
+        current = settings.get('subJsonURI', '')
+        # Retire only the exact broken URI produced by our old fresh installer.
+        if not current or current == origin + json_path.rstrip('/') + '?name=':
+            updates['subJsonURI'] = origin + json_path
+    for key, value in updates.items():
+        if settings.get(key) == value:
+            continue
+        if db.execute('SELECT 1 FROM settings WHERE key=?', (key,)).fetchone():
+            db.execute('UPDATE settings SET value=? WHERE key=?', (value, key))
+        else:
+            db.execute('INSERT INTO settings(key,value) VALUES(?,?)', (key, value))
+        settings[key] = value
+
+
 def repair_nginx(root, settings):
     snippet = root / 'etc/nginx/snippets/includes.conf'
     template = root / 'var/www/subpage/clash.yaml.tpl'
@@ -3610,6 +3682,7 @@ def migrate(root, clients_only=False):
         if clients_only:
             return
         settings = dict(db.execute('SELECT key,value FROM settings ORDER BY id'))
+        repair_subscription_exports(root, db, settings)
         repair_nginx(root, settings)
         repair_clash_renderer(root)
         db.commit()
@@ -4834,6 +4907,17 @@ EOF
         proxy_pass https://127.0.0.1:${sub_port};
     }
     # LUCX PRO native provider END
+    # LUCX PRO native AWG export BEGIN
+    location ^~ /awg/ {
+        if (\$hack = 1) { return 404; }
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_redirect off;
+        proxy_pass https://127.0.0.1:${sub_port};
+    }
+    # LUCX PRO native AWG export END
     # Dedicated Clash link displayed by the panel uses the same YAML renderer.
     location ~ ^/mihomo/(?<panel_clash_sub_id>[^/]+)/?\$ {
         if (\$hack = 1) { return 404; }
@@ -5274,7 +5358,7 @@ configure_xui_db() {
 
     local HP='http'; HP="${HP}s://${domain}"
     local sub_uri="${HP}/${sub_path}/"
-    local json_uri="${HP}/${json_path}?name="
+    local json_uri="${HP}/${json_path}/"
 
     # Prepare short IDs for REALITY
     local shor
@@ -5293,6 +5377,8 @@ DELETE FROM "settings" WHERE "key" IN ('subClashEnable','subClashPath','subClash
 INSERT INTO "settings" ("key","value") VALUES ("subClashEnable",      'true');
 INSERT INTO "settings" ("key","value") VALUES ("subClashPath",        '/mihomo/');
 INSERT INTO "settings" ("key","value") VALUES ("subClashURI",         '${HP}/mihomo/');
+DELETE FROM "settings" WHERE "key" = 'subAwgURI';
+INSERT INTO "settings" ("key","value") VALUES ("subAwgURI",           '${HP}/awg/');
 INSERT INTO "settings" ("key","value") VALUES ("subEnableRouting",    'false');
 INSERT INTO "settings" ("key","value") VALUES ("subEnable",           'true');
 INSERT INTO "settings" ("key","value") VALUES ("webListen",           '');
