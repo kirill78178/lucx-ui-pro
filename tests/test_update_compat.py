@@ -129,6 +129,20 @@ class UpdateCompatibility(unittest.TestCase):
                 compat.detach_pro_triggers(db)
                 self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall(), [('author_trigger',)])
 
+    def test_updater_preserves_native_awg_sandbox_write_paths(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'update.sh'
+            native = ('_xui_service_write_paths_dropin() {\n'
+                      '    local awg_config_dir="/etc/amnezia"\n'
+                      '    for path in "$db_folder" "$log_folder" "$bin_folder" "$main_folder" "$awg_config_dir"; do\n'
+                      '        printf "ReadWritePaths=-%s\\n" "$path"\n'
+                      '    done\n}\n'
+                      'ProtectSystem=full\nProtectKernelTunables=yes\n'
+                      'ReadWritePaths=-/etc/amnezia\nReadWriteDirectories=-/etc/amnezia\n')
+            path.write_text(native + 'XUI_UPDATE_TAG=x\n    config_after_update\n        bash "${awg_installer}" || echo fail\n')
+            compat.adapt_updater(path)
+            self.assertTrue(path.read_text().startswith(native))
+
     def test_updater_contract_is_behavior_based_not_version_based(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'update.sh'
