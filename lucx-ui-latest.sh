@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.13-292.1"
+PRO_COMPAT_REVISION="2026.10.16-302.1"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -695,13 +695,21 @@ PY_RELEASE_ASSET
 import pathlib, sys, tarfile
 destination = pathlib.Path(sys.argv[2])
 with tarfile.open(sys.argv[1], 'r:gz') as archive:
-    for member in archive.getmembers():
+    members = archive.getmembers()
+    for member in members:
         name = pathlib.PurePosixPath(member.name)
         if name.is_absolute() or '..' in name.parts or not name.parts or name.parts[0] != 'x-ui':
             raise SystemExit('Unsafe panel archive path')
         if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
             raise SystemExit('Unsupported panel archive member')
-    archive.extractall(destination)
+    # Only verified release files are staged here; never retain the CI runner uid.
+    for member in members:
+        member.uid = member.gid = 0
+        member.uname = member.gname = 'root'
+    if hasattr(tarfile, 'data_filter'):
+        archive.extractall(destination, members=members, filter='data')
+    else:
+        archive.extractall(destination, members=members)
 PY_UPDATE_EXTRACT
     [[ $? -eq 0 && -s "$stage/release/x-ui/x-ui" ]] || return 1
     curl -fSL --retry 3 --connect-timeout 15 --max-time 90 \
@@ -1456,12 +1464,13 @@ choose_hy2_port() {
             msg_err "Некорректный порт."
             continue
         fi
-        case "$p" in
-            80|443|46000|56000|56001|56003|7443|8443|9443|11443)
-                msg_err "Порт ${p} занят."
-                continue
-                ;;
-        esac
+        # TCP listeners (including nginx :443) do not occupy UDP ports.
+        # Sidecars selected below have not started yet; reserve only their UDP ports.
+        if { [[ "${DEPLOY_CSQTT:-}" == 1 && "$p" == 46000 ]]; } ||
+           { [[ "${DEPLOY_QWDTT:-}" == 1 ]] && [[ "$p" == 56000 || "$p" == 56001 || "$p" == 56003 ]]; }; then
+            msg_err "UDP-порт ${p} нужен выбранному дополнительному инбаунду."
+            continue
+        fi
         if ss -Hlnu "sport = :$p" 2>/dev/null | grep -q .; then
             msg_err "Порт ${p} занят."
             continue
@@ -2058,7 +2067,7 @@ ensure_tproxy_certificate() {
     else
         systemctl is-active --quiet nginx && was_active=1
         systemctl stop nginx 2>/dev/null || true
-        certbot certonly --standalone --non-interactive --agree-tos             --register-unsafely-without-email -d "$d" || rc=$?
+        certbot certonly --standalone --non-interactive --agree-tos             --register-unsafely-without-email --cert-name "$d" -d "$d" || rc=$?
         [[ $was_active -eq 1 ]] && systemctl start nginx 2>/dev/null || true
         [[ $rc -eq 0 ]] || return "$rc"
     fi
@@ -2942,7 +2951,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.13-292.1'
+REVISION = '2026.10.16-302.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -4784,7 +4793,7 @@ ensure_site_certificate() {
         return 0
     fi
     certbot certonly --standalone --non-interactive --agree-tos \
-        --register-unsafely-without-email -d "$d" || return 1
+        --register-unsafely-without-email --cert-name "$d" -d "$d" || return 1
     [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]]
 }
 
@@ -5243,7 +5252,8 @@ PY_OPENFLUX_VERSION
     if [[ $? -ne 0 ]]; then wget -O /usr/bin/x-ui-temp "$RAW/AlexeyLCP/lucx-ui/main/x-ui.sh"; fi
     [[ $? -ne 0 ]] && echo "Failed to download x-ui.sh" && exit 1
     [[ -d /usr/local/x-ui/ ]] && systemctl stop x-ui 2>/dev/null; rm -rf /usr/local/x-ui/
-    tar zxvf x-ui-linux-$(_arch).tar.gz
+    # Release archives can retain the CI runner uid; sidecars must be root-owned.
+    tar --no-same-owner -zxvf x-ui-linux-$(_arch).tar.gz || return 1
     rm -f x-ui-linux-$(_arch).tar.gz
     cd x-ui
     chmod +x x-ui x-ui.sh
@@ -5257,7 +5267,12 @@ PY_OPENFLUX_VERSION
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
     _panel_initial_config
-    cp -f x-ui.service.debian /etc/systemd/system/x-ui.service
+    cp -f x-ui.service.debian /etc/systemd/system/x-ui.service || return 1
+    # Match the author's MTProxy service account setup outside the systemd sandbox.
+    if grep -q 'CAP_SETUID.*CAP_SETGID' /etc/systemd/system/x-ui.service &&
+       ! id lucx-mtproxy >/dev/null 2>&1; then
+        useradd -r -M -N -s /usr/sbin/nologin lucx-mtproxy >/dev/null 2>&1 || true
+    fi
     systemctl daemon-reload
     systemctl enable x-ui
     # Do not start x-ui here. The bootstrap configuration still uses the
