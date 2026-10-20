@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.17-304.1"
+PRO_COMPAT_REVISION="2026.10.20-306.1"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -1187,14 +1187,15 @@ choose_amneziawg() {
 
 download_one_geo() {
     local dest="$1" name="$2" url="$3" fallback="${4:-}" min_bytes="${5:-50000}"
+    local max_time="${6:-180}"
     local tmp http size head
     tmp="${dest}/${name}.tmp.$$"
     rm -f "$tmp"
-    http=$(curl -sSfLRo "$tmp" --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 -w '%{http_code}' "$url" || true)
+    http=$(curl -sSfLRo "$tmp" --retry 4 --retry-delay 2 --connect-timeout 15 --max-time "$max_time" -w '%{http_code}' "$url" || true)
     if [[ "$http" != "200" || ! -s "$tmp" ]]; then
         rm -f "$tmp"
         if [[ -n "$fallback" ]]; then
-            http=$(curl -sSfLRo "$tmp" --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 -w '%{http_code}' "$fallback" || true)
+            http=$(curl -sSfLRo "$tmp" --retry 4 --retry-delay 2 --connect-timeout 15 --max-time "$max_time" -w '%{http_code}' "$fallback" || true)
         fi
     fi
     if [[ "$http" != "200" || ! -s "$tmp" ]]; then
@@ -1223,7 +1224,13 @@ ensure_stock_geo() {
         echo "  ${name}: already present, leave stock file"
         return 0
     fi
-    download_one_geo "$dest" "$name" "$url" "$fallback" "$min_bytes"
+    download_one_geo "$dest" "$name" "$url" "$fallback" "$min_bytes" "${6:-180}"
+}
+panel_supports_ga_geodata() {
+    local installed
+    installed=$(/usr/local/x-ui/x-ui -v 2>/dev/null || true)
+    [[ "$installed" =~ -lucx\.([0-9]+) ]] || return 1
+    (( 10#${BASH_REMATCH[1]} >= 305 ))
 }
 fetch_lucx_geofiles() {
     local dest="${1:-/usr/local/x-ui/bin}"
@@ -1240,6 +1247,12 @@ fetch_lucx_geofiles() {
     ensure_stock_geo "$dest" geosite_RU.dat "$GH/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat" "$RAW/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" 50000 || true
     ensure_stock_geo "$dest" geoip_ROSCOM.dat "$GH/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat" "$CDN/hydraponique/roscomvpn-geoip/release/geoip.dat" 50000 || true
     ensure_stock_geo "$dest" geosite_ROSCOM.dat "$GH/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat" "$CDN/hydraponique/roscomvpn-geosite/release/geosite.dat" 50000 || true
+    if panel_supports_ga_geodata; then
+        # Native lucx.305+ source; optional like the other extra stock datasets.
+        # The 35 MB geoip file needs the native lucx.306 slow-link timeout.
+        ensure_stock_geo "$dest" geoip_GA.dat "$RAW/Ground-Zerro/Geo-Aggregator/main/geodat/geoip_GA.dat" "" 50000 600 || true
+        ensure_stock_geo "$dest" geosite_GA.dat "$RAW/Ground-Zerro/Geo-Aggregator/main/geodat/geosite_GA.dat" "" 50000 600 || true
+    fi
     echo "Placing runetfreedom NEXT TO ROSCOM as geoip_RUNET.dat / geosite_RUNET.dat ..."
     download_one_geo "$dest" geoip_RUNET.dat "$RAW/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat" "$GH/runetfreedom/russia-v2ray-rules-dat/raw/release/geoip.dat" 50000 || return 1
     download_one_geo "$dest" geosite_RUNET.dat "$RAW/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" "$GH/runetfreedom/russia-v2ray-rules-dat/raw/release/geosite.dat" 50000 || return 1
@@ -1316,7 +1329,8 @@ choose_xray_dns() {
 }
 apply_xray_template() {
     [[ ! -f $XUIDB ]] && { msg_err "x-ui.db not found — cannot apply Xray template."; return 1; }
-    local qstrat freedom_strat enable_he=0 dns_mode="${DNS_CHOICE:-1}"
+    local qstrat freedom_strat enable_he=0 dns_mode="${DNS_CHOICE:-1}" ga_geodata=0
+    if panel_supports_ga_geodata; then ga_geodata=1; fi
     if [[ "$dns_mode" != "1" ]]; then
         if has_global_ipv6; then qstrat='UseIP'; freedom_strat='ForceIP'; enable_he=1
         else qstrat='UseIPv4'; freedom_strat='ForceIPv4'; fi
@@ -1324,9 +1338,9 @@ apply_xray_template() {
     [[ -z "${IP4:-}" ]] && get_server_ip
     x-ui stop >/dev/null 2>&1 || true; sleep 2; pkill -x x-ui >/dev/null 2>&1 || true; sleep 1
     python3 - "$XUIDB" "$dns_mode" "$qstrat" "$freedom_strat" "$enable_he" \
-        "${domain:-}" "${IP4:-}" "${CUSTOM_DOH_URL:-}" "${CUSTOM_DOH_HOST:-}" "${CUSTOM_DOH_IP:-}" <<'PY'
+        "${domain:-}" "${IP4:-}" "${CUSTOM_DOH_URL:-}" "${CUSTOM_DOH_HOST:-}" "${CUSTOM_DOH_IP:-}" "$ga_geodata" <<'PY'
 import json, sqlite3, sys
-db, choice, qstrat, freedom_strat, enable_he, domain, ip4, custom_url, custom_host, custom_ip = sys.argv[1:11]
+db, choice, qstrat, freedom_strat, enable_he, domain, ip4, custom_url, custom_host, custom_ip, ga_geodata = sys.argv[1:12]
 GH = "https://github.com"; RAW = "https://raw.githubusercontent.com"
 GEODATA = {"cron": "0 4 * * 0", "assets": [
     {"url": GH + "/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat", "file": "geoip.dat"},
@@ -1340,6 +1354,11 @@ GEODATA = {"cron": "0 4 * * 0", "assets": [
     {"url": RAW + "/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat", "file": "geoip_RUNET.dat"},
     {"url": RAW + "/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat", "file": "geosite_RUNET.dat"},
 ]}
+if ga_geodata == "1":
+    GEODATA["assets"].extend([
+        {"url": RAW + "/Ground-Zerro/Geo-Aggregator/main/geodat/geoip_GA.dat", "file": "geoip_GA.dat"},
+        {"url": RAW + "/Ground-Zerro/Geo-Aggregator/main/geodat/geosite_GA.dat", "file": "geosite_GA.dat"},
+    ])
 DEFAULT = {"api": {"services": ["HandlerService", "LoggerService", "StatsService", "RoutingService"], "tag": "api"},
     "inbounds": [{"listen": "127.0.0.1", "port": 62789, "protocol": "tunnel", "settings": {"rewriteAddress": "127.0.0.1"}, "tag": "api"}],
     "log": {"access": "none", "dnsLog": False, "error": "", "loglevel": "warning", "maskAddress": ""},
@@ -2951,7 +2970,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.17-304.1'
+REVISION = '2026.10.20-306.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
