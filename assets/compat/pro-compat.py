@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.20-307.1'
+REVISION = '2026.10.21-307.2'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -735,7 +735,29 @@ def remove_forwarding_override(root):
     # Do not write ip_forward=0: active panel tunnels own runtime forwarding.
 
 
+def remove_native_rkn_schedule(root):
+    units = root / 'etc/systemd/system'
+    timer = units / 'rkn-guard-update.timer'
+    service = units / 'rkn-guard-update.service'
+    link = units / 'timers.target.wants/rkn-guard-update.timer'
+    config = root / 'etc/rkn-guard-update.conf'
+    if not any(path.exists() or path.is_symlink() for path in (timer, service, link, config)):
+        return
+    if root == Path('/'):
+        if timer.exists() or link.is_symlink():
+            subprocess.run(['systemctl', 'disable', '--now', timer.name], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if service.exists():
+            subprocess.run(['systemctl', 'stop', service.name], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for path in (timer, service, link, config):
+        path.unlink(missing_ok=True)
+    if root == Path('/'):
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+
+
 def repair_rkn_timers(root):
+    remove_native_rkn_schedule(root)
     for name, delay in (('list', '15min'), ('self', '30min')):
         path = root / f'etc/systemd/system/rkn-guard-{name}-update.timer'
         if path.is_file():
@@ -796,7 +818,7 @@ def inspect(root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=('report', 'clients', 'apply', 'firewall',
-                                         'restore-sidecars', 'capture', 'capture-update', 'preserve-flow', 'verify', 'probe', 'prepare-update', 'adapt-updater'))
+                                         'restore-sidecars', 'capture', 'capture-update', 'preserve-flow', 'verify', 'probe', 'prepare-update', 'adapt-updater', 'cleanup-rkn-schedule'))
     parser.add_argument('--root', type=Path, default=Path('/'))
     parser.add_argument('--state', type=Path)
     parser.add_argument('--path', type=Path)
@@ -804,7 +826,9 @@ def main():
     parser.add_argument('--before-repair', action='store_true')
     args = parser.parse_args()
     root = args.root.resolve()
-    if args.action == 'restore-sidecars':
+    if args.action == 'cleanup-rkn-schedule':
+        remove_native_rkn_schedule(root)
+    elif args.action == 'restore-sidecars':
         restore_sidecars(root, args.source, root / 'usr/local/x-ui')
     elif args.action == 'adapt-updater':
         adapt_updater(args.path)
