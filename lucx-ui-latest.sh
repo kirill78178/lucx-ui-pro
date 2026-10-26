@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.25-316.1"
+PRO_COMPAT_REVISION="2026.10.26-316.2"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -2329,7 +2329,7 @@ def reset_fields(value, fields, defaults=None):
 
 
 def reset_xhttp(value, path, host=None):
-    defaults = {'path': path, 'mode': 'stream-up'}
+    defaults = {'path': path, 'mode': 'auto'}
     if host: defaults['host'] = host
     value = reset_fields(value, XHTTP_FIELDS, defaults)
     if 'xmux' in value:
@@ -2737,8 +2737,9 @@ def canonical(row, kind, xhttp_path=None, saved=None, domains=None, permitted_ho
         row['listen'] = SOCKET + ',0666'; row['port'] = 0
         stream['network'] = 'xhttp'; stream['security'] = 'none'
         stream['xhttpSettings'] = reset_xhttp(stream.get('xhttpSettings'), xhttp_path, domains[0])
-        # Managed XHTTP uses a Unix socket; Sockopt is explicitly disabled.
-        stream.pop('sockopt', None)
+        # nginx overwrites X-Forwarded-For before forwarding to this Unix socket.
+        sockopt['trustedXForwardedFor'] = ['X-Forwarded-For']
+        stream['sockopt'] = sockopt
     row['settings'] = json.dumps(settings, ensure_ascii=False)
     row['stream_settings'] = json.dumps(stream, ensure_ascii=False)
     return row
@@ -2893,7 +2894,7 @@ def reconcile(root, remember=False, changes=None):
         content = json.dumps(new_manifest, ensure_ascii=False, indent=2) + '\n'
         if not manifest_path.exists() or manifest_path.read_text() != content:
             atomic(manifest_path, content, True)
-    print('Managed architecture: ' + ('identities saved.' if remember else 'XHTTP stream-up; Unix socket; internal listeners on loopback.'))
+    print('Managed architecture: ' + ('identities saved.' if remember else 'XHTTP auto; trusted nginx header; Unix socket; internal listeners on loopback.'))
     if changes is not None:
         atomic(changes, json.dumps({'nginx_listeners_changed': listeners_changed}) + '\n', True)
 
@@ -2970,7 +2971,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.25-316.1'
+REVISION = '2026.10.26-316.2'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -5026,7 +5027,7 @@ EOF
         proxy_pass https://127.0.0.1:${sub_port};
     }
 
-    #XHTTP: stream-up, real IP from the trusted public SNI entry point.
+    #XHTTP: all server modes, real IP from the trusted public SNI entry point.
     location ^~ /${xhttp_path}/ {
         client_max_body_size 0;
         client_body_timeout 1h;
@@ -5533,7 +5534,10 @@ VALUES (
   "xhttpSettings": {
     "host": "${domain}",
     "path": "/${xhttp_path}",
-    "mode": "stream-up"
+    "mode": "auto"
+  },
+  "sockopt": {
+    "trustedXForwardedFor": ["X-Forwarded-For"]
   }
 }',
     'inbound-/dev/shm/uds2023.sock,0666:0|',

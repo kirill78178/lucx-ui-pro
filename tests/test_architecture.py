@@ -174,7 +174,7 @@ class Architecture(unittest.TestCase):
                     ('{"network":"xhttp","xhttpSettings":null,"future":7}',))
             before=records(root)[99];arch.reconcile(root)
             self.assertEqual(before,records(root)[99])
-            self.assertEqual(json.loads(records(root)[2]['stream_settings'])['xhttpSettings']['mode'],'stream-up')
+            self.assertEqual(json.loads(records(root)[2]['stream_settings'])['xhttpSettings']['mode'],'auto')
     def test_native_public_key_formats_and_future_format_do_not_block(self):
         for label in ('Password (PublicKey)','PublicKey','Public key','Password','FutureLabel'):
             with self.subTest(label=label),patch.object(arch.Path,'glob',return_value=iter([Path('/fake/xray')])):
@@ -267,8 +267,8 @@ class Architecture(unittest.TestCase):
             for key in before[2]:
                 if key not in ('listen','settings','stream_settings'): self.assertEqual(before[2][key], after[2][key])
             stream = json.loads(after[2]['stream_settings'])
-            self.assertEqual(stream['xhttpSettings']['mode'],'stream-up')
-            self.assertNotIn('sockopt', stream)
+            self.assertEqual(stream['xhttpSettings']['mode'],'auto')
+            self.assertEqual(stream['sockopt'],{'futureSockopt':42,'trustedXForwardedFor':['X-Forwarded-For']})
             self.assertEqual(stream['future'], {'native':True})
             self.assertEqual(stream['xhttpSettings']['future'],'keep')
             with connection(root/'etc/x-ui/x-ui.db') as db:
@@ -416,9 +416,9 @@ class Architecture(unittest.TestCase):
                     db.execute('UPDATE inbounds SET stream_settings=? WHERE id=2',(json.dumps(stream),))
                 arch.reconcile(root)
                 stream=json.loads(records(root)[2]['stream_settings'])
-                self.assertEqual(stream['xhttpSettings'],{'host':'main.example','path':'/secret','mode':'stream-up','future':'keep',
+                self.assertEqual(stream['xhttpSettings'],{'host':'main.example','path':'/secret','mode':'auto','future':'keep',
                     'xmux':{'future':7},'extra':{'futureExtra':9}})
-                self.assertNotIn('sockopt', stream)
+                self.assertEqual(stream['sockopt'],{'futureSockopt':42,'trustedXForwardedFor':['X-Forwarded-For']})
 
     def test_deleted_legacy_inbound_stays_deleted_even_with_verified_backup(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -458,7 +458,7 @@ class Architecture(unittest.TestCase):
             row=records(root)[2];stream=json.loads(row['stream_settings'])
             self.assertEqual(row['port'],0)
             self.assertEqual(stream['xhttpSettings']['path'],'/secret')
-            self.assertEqual(stream['xhttpSettings']['mode'],'stream-up')
+            self.assertEqual(stream['xhttpSettings']['mode'],'auto')
             self.assertEqual(stream['nativeAddedAfterUpdate'],{'nested':[1,2,3]})
 
     def test_connection_identity_loss_detected_but_new_native_fields_allowed(self):
@@ -483,7 +483,7 @@ class Architecture(unittest.TestCase):
             with connection(root/'etc/x-ui/x-ui.db') as db:db.execute('DELETE FROM inbounds WHERE id=1')
             arch.reconcile(root)
             self.assertNotIn(1,records(root))
-            self.assertEqual(json.loads(records(root)[2]['stream_settings'])['xhttpSettings']['mode'],'stream-up')
+            self.assertEqual(json.loads(records(root)[2]['stream_settings'])['xhttpSettings']['mode'],'auto')
 
     def test_only_original_host_is_normalized_new_user_host_untouched(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -501,7 +501,7 @@ class Architecture(unittest.TestCase):
             arch.reconcile(root)
             with connection(root/'etc/x-ui/x-ui.db') as db:self.assertIsNone(db.execute('SELECT * FROM hosts WHERE id=2').fetchone())
 
-    def test_sockopt_is_disabled_on_owned_xhttp_only(self):
+    def test_xhttp_trusts_nginx_header_without_tcp_options_on_owned_inbound_only(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);fixture(root)
             with connection(root/'etc/x-ui/x-ui.db') as db:
@@ -510,7 +510,8 @@ class Architecture(unittest.TestCase):
                 db.execute('UPDATE inbounds SET stream_settings=? WHERE id=99',(json.dumps(s),))
             custom=records(root)[99]
             arch.reconcile(root)
-            self.assertNotIn('sockopt',json.loads(records(root)[2]['stream_settings']))
+            self.assertEqual(json.loads(records(root)[2]['stream_settings'])['sockopt'],
+                {'futureSockopt':42,'trustedXForwardedFor':['X-Forwarded-For']})
             self.assertEqual(records(root)[99],custom)
 
     def test_ambiguous_legacy_signature_is_skipped_without_blocking_update(self):
@@ -574,6 +575,14 @@ class Architecture(unittest.TestCase):
             if expected:self.assertIn(expected,result.stdout)
             else:self.assertNotIn('ACTION=',result.stdout)
             if installed=='287':self.assertNotIn('Обновить панель до',result.stdout)
+
+    def test_initial_xhttp_uses_all_server_modes_and_trusted_nginx_header(self):
+        script=(REPO/'lucx-ui-latest.sh').read_text(encoding='utf-8')
+        start=script.index('  "network": "xhttp",',script.index('INSERT INTO "inbounds"'))
+        end=script.index("}',",start)
+        stream=json.loads('{'+script[start:end]+'}')
+        self.assertEqual(stream['xhttpSettings']['mode'],'auto')
+        self.assertEqual(stream['sockopt'],{'trustedXForwardedFor':['X-Forwarded-For']})
 
     def test_embedded_helpers_match_source(self):
         source=(REPO/'assets/compat/architecture.py').read_text().rstrip()
