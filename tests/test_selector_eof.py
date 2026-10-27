@@ -13,7 +13,7 @@ class SelectorEOF(unittest.TestCase):
         if not bash:
             self.skipTest('bash unavailable')
         source = (Path(__file__).resolve().parents[1] / 'lucx-ui-latest.sh').read_text(encoding='utf-8')
-        for name in ('choose_xray_dns','choose_extra_inbounds','choose_adguard','choose_rkn_guard'):
+        for name in ('choose_xray_dns','choose_extra_inbounds','choose_adguard','choose_rkn_guard','choose_bittorrent_guard'):
             with self.subTest(selector=name), tempfile.TemporaryDirectory() as folder:
                 function = re.search(r'^'+name+r'\(\) \{.*?^\}',source,re.M|re.S)
                 self.assertIsNotNone(function)

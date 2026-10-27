@@ -262,10 +262,13 @@ BACKUP_PATHS=(
     /usr/local/bin/antiscan-aggregate-logs.sh
     /opt/rkn-guard-manager.sh
     /opt/rkn-guard-manual.list
+    /usr/local/lib/vibehost-guard
+    /etc/vibehost-guard
     /opt/AdGuardHome
     /root/.lucx-adguard-info
 )
 SYSTEMD_UNITS=(
+    vibehost-guard.service vibehost-guard-tick.service vibehost-guard-tick.timer
     x-ui.service mtr-backend.service lucx-clash-sub.service AdGuardHome.service fail2ban.service
     lucx-apply-qdisc.service
     lucx-qdisc-sync.service lucx-qdisc-sync.path
@@ -400,7 +403,8 @@ cmd_backup() {
     for svc in x-ui nginx lucx-clash-sub AdGuardHome mtr-backend lucx-apply-qdisc lucx-qdisc-sync.path \
                lucx-awg-sysctl-guard.path antiscan-ipset-restore.service \
                antiscan-move-rules.service antiscan-aggregate.timer \
-               rkn-guard-list-update.timer rkn-guard-self-update.timer; do
+               rkn-guard-list-update.timer rkn-guard-self-update.timer \
+               vibehost-guard.service vibehost-guard-tick.timer; do
         enabled=0; active=0
         systemctl is-enabled --quiet "$svc" && enabled=1 || true
         systemctl is-active --quiet "$svc" && active=1 || true
@@ -875,7 +879,7 @@ verify_backup_archive() {
     python3 - "$file" <<'PY_VERIFY_ARCHIVE' || die "Invalid or unsafe backup archive"
 import json, pathlib, sys, tarfile
 archive = pathlib.Path(sys.argv[1])
-allowed = [p.lstrip('/') for p in ['/etc/nginx', '/etc/x-ui', '/etc/default/x-ui', '/etc/fail2ban', '/etc/cron.d', '/usr/local/x-ui', '/usr/bin/x-ui', '/usr/local/lib/3x-ui-pro', '/usr/local/lib/lucx-ui-pro', '/usr/local/sbin/lucx-apply-qdisc', '/usr/local/sbin/lucx-awg-sysctl-guard', '/etc/systemd/system', '/etc/letsencrypt', '/var/lib/letsencrypt', '/var/log/letsencrypt', '/etc/sysctl.conf', '/root/cert', '/var/www/html', '/var/www/diagnostics', '/var/www/subpage', '/var/www/tproxy', '/root/.lucx-tg-web-proxy-info', '/var/lib/lucx-ui-preinstall', '/etc/sysctl.d/99-lucx-ui-forwarding.conf', '/etc/sysctl.d/99-bbr-x-ui.conf', '/etc/sysctl.d/99-awg-performance.conf', '/etc/sysctl.d/99-zz-lucx-ui-tuning.conf', '/etc/modules-load.d/lucx-ui-network.conf', '/etc/modules-load.d/amneziawg.conf', '/etc/modules-load.d/tcp-bbr.conf', '/etc/default/ufw', '/etc/ufw/user.rules', '/etc/ufw/user6.rules', '/etc/ufw/before.rules', '/etc/ufw/before6.rules', '/etc/ipset.conf', '/etc/iptables/ipsets', '/etc/rsyslog.d/10-iptables-scanners.conf', '/etc/logrotate.d/iptables-scanners', '/etc/logrotate.d/nginx', '/etc/systemd/journald.conf.d/99-lucx-ui-pro-logs.conf', '/usr/local/bin/rkn-guard', '/usr/local/bin/rkn', '/usr/local/bin/antiscan-aggregate-logs.sh', '/opt/rkn-guard-manager.sh', '/opt/rkn-guard-manual.list', '/opt/AdGuardHome', '/root/.lucx-adguard-info']]
+allowed = [p.lstrip('/') for p in ['/etc/nginx', '/etc/x-ui', '/etc/default/x-ui', '/etc/fail2ban', '/etc/cron.d', '/usr/local/x-ui', '/usr/bin/x-ui', '/usr/local/lib/3x-ui-pro', '/usr/local/lib/lucx-ui-pro', '/usr/local/sbin/lucx-apply-qdisc', '/usr/local/sbin/lucx-awg-sysctl-guard', '/etc/systemd/system', '/etc/letsencrypt', '/var/lib/letsencrypt', '/var/log/letsencrypt', '/etc/sysctl.conf', '/root/cert', '/var/www/html', '/var/www/diagnostics', '/var/www/subpage', '/var/www/tproxy', '/root/.lucx-tg-web-proxy-info', '/var/lib/lucx-ui-preinstall', '/etc/sysctl.d/99-lucx-ui-forwarding.conf', '/etc/sysctl.d/99-bbr-x-ui.conf', '/etc/sysctl.d/99-awg-performance.conf', '/etc/sysctl.d/99-zz-lucx-ui-tuning.conf', '/etc/modules-load.d/lucx-ui-network.conf', '/etc/modules-load.d/amneziawg.conf', '/etc/modules-load.d/tcp-bbr.conf', '/etc/default/ufw', '/etc/ufw/user.rules', '/etc/ufw/user6.rules', '/etc/ufw/before.rules', '/etc/ufw/before6.rules', '/etc/ipset.conf', '/etc/iptables/ipsets', '/etc/rsyslog.d/10-iptables-scanners.conf', '/etc/logrotate.d/iptables-scanners', '/etc/logrotate.d/nginx', '/etc/systemd/journald.conf.d/99-lucx-ui-pro-logs.conf', '/usr/local/bin/rkn-guard', '/usr/local/bin/rkn', '/usr/local/bin/antiscan-aggregate-logs.sh', '/opt/rkn-guard-manager.sh', '/opt/rkn-guard-manual.list', '/opt/AdGuardHome', '/root/.lucx-adguard-info', '/usr/local/lib/vibehost-guard', '/etc/vibehost-guard']]
 seen, links = set(), set()
 try:
     with tarfile.open(archive, 'r:gz') as tar:
@@ -1618,7 +1622,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.26-316.2'
+REVISION = '2026.10.27-319.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -2610,6 +2614,8 @@ PY_META_AWG
     # shellcheck disable=SC2086
     DEBIAN_FRONTEND=noninteractive apt-get install -y ${PACKAGES}
 
+    systemctl stop vibehost-guard-tick.timer vibehost-guard-tick.service vibehost-guard.service 2>/dev/null || true
+
     # ── stop running services ─────────────────────────────────────────────
     blue "==> Stopping services..."
     for svc in lucx-awg-sysctl-guard.timer lucx-awg-readiness nginx x-ui lucx-clash-sub mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync lucx-qdisc-sync.path lucx-awg-sysctl-guard lucx-awg-sysctl-guard.path; do
@@ -2970,6 +2976,14 @@ PY_TG_RESTORE
         ufw reload || die "Failed to apply restored UFW rules"
     fi
     green "    UFW state and runtime rules restored"
+    if [[ -x /usr/local/lib/vibehost-guard/guard.sh && -f /etc/systemd/system/vibehost-guard.service ]]; then
+        restore_unit_state vibehost-guard.service
+        restore_unit_state vibehost-guard-tick.timer
+        if systemctl is-active --quiet vibehost-guard.service || systemctl is-active --quiet vibehost-guard-tick.timer; then
+            env -u VH_GUARD_API -u VH_GUARD_LOCKED sh /usr/local/lib/vibehost-guard/guard.sh apply || die "Failed to restore BitTorrent guard rules"
+        fi
+    fi
+
     if systemctl is-active --quiet x-ui; then
         systemctl restart x-ui || die "Panel failed to reapply tunnel firewall after UFW restore"
     fi
@@ -3051,6 +3065,7 @@ What is backed up:
   Telegram WEB-proxy domain, certificate and inbound (inside x-ui DB)
   /opt/AdGuardHome                self-hosted DoH (if installed)
   rkn-guard binary, manager, ipset/UFW state and update timers
+  VibeHost BitTorrent guard, private enrollment state and boot/check units
   /var/lib/lucx-ui-preinstall     pre-install firewall snapshot and auto-domain selection
   legacy Pro forwarding file is archived and retired on restore (panel owns forwarding)
   relevant services and timers from /etc/systemd/system

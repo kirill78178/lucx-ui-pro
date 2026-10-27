@@ -89,7 +89,7 @@ AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
 UPDATE_COMPAT=""
-PRO_COMPAT_REVISION="2026.10.26-316.2"
+PRO_COMPAT_REVISION="2026.10.27-319.1"
 
 # Self-contained log retention helper; also used when restoring older backups.
 run_log_policy() {
@@ -300,6 +300,9 @@ ADGUARD_ONLY=""
 ADGUARD_UNINSTALL=""
 RKN_GUARD_ONLY=""
 RKN_GUARD_UNINSTALL=""
+BITTORRENT_GUARD_ONLY=""
+BITTORRENT_GUARD_UNINSTALL=""
+DEPLOY_BITTORRENT_GUARD=""
 TG_WEB_PROXY_ONLY=""
 TG_WEB_PROXY_UNINSTALL=""
 DEPLOY_RKN=""
@@ -510,6 +513,8 @@ restore_preinstall_state() {
     # No autoremove: it could remove packages installed by the administrator.
     msg_inf "Удаляю пакеты, установленные вместе с панелью (certbot сохраняется)..."
     for package in nginx-full nginx nginx-common nginx-core fail2ban ipset iptables ufw cron sqlite3 mtr libcap2-bin netcat-openbsd; do
+        # The independent BitTorrent guard still needs its firewall executable.
+        [[ "$package" != iptables || ! -x /usr/local/lib/vibehost-guard/guard.sh ]] || continue
         if ! grep -Fxq "$package" "$dir/packages" && dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
             msg_inf "  Удаляю пакет: ${package}"
             apt-get -y purge "$package" >/dev/null 2>&1 || msg_err "Не удалось удалить пакет ${package}; проверьте его вручную."
@@ -598,6 +603,8 @@ Usage:
   bash lucx-ui-latest.sh -adguard-uninstall y
   bash lucx-ui-latest.sh -rkn-guard y
   bash lucx-ui-latest.sh -rkn-guard-uninstall y
+  bash lucx-ui-latest.sh -bittorrent-guard y
+  bash lucx-ui-latest.sh -bittorrent-guard-uninstall y
   bash lucx-ui-latest.sh -tg-web-proxy y
   bash lucx-ui-latest.sh -tg-web-proxy-uninstall y
 EOF
@@ -621,6 +628,8 @@ while [ "$#" -gt 0 ]; do
         -adguard-uninstall) require_arg_value "$@"; ADGUARD_UNINSTALL="$2"; shift 2 ;;
         -rkn-guard)        require_arg_value "$@"; RKN_GUARD_ONLY="$2";     shift 2 ;;
         -rkn-guard-uninstall) require_arg_value "$@"; RKN_GUARD_UNINSTALL="$2"; shift 2 ;;
+        -bittorrent-guard) require_arg_value "$@"; BITTORRENT_GUARD_ONLY="$2"; shift 2 ;;
+        -bittorrent-guard-uninstall) require_arg_value "$@"; BITTORRENT_GUARD_UNINSTALL="$2"; shift 2 ;;
         -tg-web-proxy)     require_arg_value "$@"; TG_WEB_PROXY_ONLY="$2";  shift 2 ;;
         -tg-web-proxy-uninstall) require_arg_value "$@"; TG_WEB_PROXY_UNINSTALL="$2"; shift 2 ;;
         -uninstall)        require_arg_value "$@"; UNINSTALL="$2";          shift 2 ;;
@@ -631,6 +640,7 @@ done
 
 for _action_value in "$UPDATE_COMPAT" "$INSTALL" "$UNINSTALL" "$ADGUARD_ONLY" "$ADGUARD_UNINSTALL" \
                      "$RKN_GUARD_ONLY" "$RKN_GUARD_UNINSTALL" \
+                     "$BITTORRENT_GUARD_ONLY" "$BITTORRENT_GUARD_UNINSTALL" \
                      "$TG_WEB_PROXY_ONLY" "$TG_WEB_PROXY_UNINSTALL"; do
     [[ -z "$_action_value" || "$_action_value" == "y" ]] || {
         msg_err "Action options accept only the value: y"
@@ -646,6 +656,7 @@ done
 _action_count=0
 for _action_value in "$UPDATE_COMPAT" "$INSTALL" "$UNINSTALL" "$ADGUARD_ONLY" "$ADGUARD_UNINSTALL" \
                      "$RKN_GUARD_ONLY" "$RKN_GUARD_UNINSTALL" \
+                     "$BITTORRENT_GUARD_ONLY" "$BITTORRENT_GUARD_UNINSTALL" \
                      "$TG_WEB_PROXY_ONLY" "$TG_WEB_PROXY_UNINSTALL"; do
     [[ "$_action_value" == "y" ]] && _action_count=$((_action_count + 1))
 done
@@ -928,6 +939,7 @@ PY_NO_DOWNGRADE
     msg_inf 'Полный backup сохранён в /var/backups/x-ui. Выполняются миграции.'
     local -a snapshot_entries=(/etc/x-ui /etc/nginx /etc/ufw /etc/default/ufw /etc/sysctl.d
         /usr/local/x-ui /usr/bin/x-ui /usr/local/lib/lucx-ui-pro
+        /usr/local/lib/vibehost-guard /etc/vibehost-guard
         /usr/local/sbin/lucx-awg-sysctl-guard /etc/systemd/system
         /var/www /var/lib/lucx-ui-preinstall /opt/AdGuardHome/AdGuardHome.yaml
         /etc/logrotate.d/nginx /etc/systemd/journald.conf.d/99-lucx-ui-pro-logs.conf)
@@ -956,7 +968,7 @@ PY_UPDATE_CERT_FILES
     (( available_kb >= snapshot_kb + 65536 )) || {
         msg_err 'Недостаточно места для локального отката; панель не обновлена.'; return 1;
     }
-    local was_active=0 was_enabled=0 failed=0 awg_present=0 guard_active=0 guard_timer_active=0 logs_active=0
+    local was_active=0 was_enabled=0 failed=0 awg_present=0 guard_active=0 guard_timer_active=0 logs_active=0 bittorrent_guard_active=0
     local -a required_services=()
     local service
     for service in nginx AdGuardHome lucx-clash-sub; do
@@ -1070,6 +1082,12 @@ PY_ARCH_LISTEN_CHANGED
     fi
     (( failed )) || run_log_policy install || failed=1
     (( failed )) || setup_cron || failed=1
+    if (( failed == 0 )) && [[ -x /usr/local/lib/vibehost-guard/guard.sh ]] &&
+       systemctl is-active --quiet vibehost-guard.service && systemctl is-active --quiet vibehost-guard-tick.timer; then
+        bittorrent_guard_active=1
+        install_bittorrent_guard || failed=1
+    fi
+    (( failed )) || refresh_bittorrent_guard_rules || failed=1
     if (( failed )); then
         if [[ "$choice" == 2 ]]; then
             msg_err 'Обновление архитектуры панели завершилось с ошибкой. Выполняется откат файлов и базы данных.'
@@ -1084,7 +1102,7 @@ PY_ARCH_LISTEN_CHANGED
         for entry in "${snapshot_entries[@]}"; do
             if [[ -e "$stage/rollback$entry" ]]; then
                 case "$entry" in
-                    /usr/local/x-ui|/etc/x-ui|/usr/local/lib/lucx-ui-pro|/var/www)
+                    /usr/local/x-ui|/etc/x-ui|/usr/local/lib/lucx-ui-pro|/usr/local/lib/vibehost-guard|/etc/vibehost-guard|/var/www)
                         rm -rf -- "$entry"
                         cp -a "$stage/rollback$entry" "$entry" || return 1 ;;
                     *) cp -a "$stage/rollback$entry" "$(dirname "$entry")/" || return 1 ;;
@@ -1120,6 +1138,10 @@ PY_ARCH_LISTEN_CHANGED
             systemctl start lucx-awg-sysctl-guard.path 2>/dev/null || true
         fi
         ufw reload 2>/dev/null || true
+        if (( bittorrent_guard_active )); then
+            systemctl enable --now vibehost-guard.service vibehost-guard-tick.timer || true
+        fi
+        refresh_bittorrent_guard_rules || true
         sysctl -w "net.ipv4.tcp_congestion_control=$saved_cc" "net.core.default_qdisc=$saved_qdisc" >/dev/null || true
         nginx -t && systemctl restart nginx || {
             msg_err 'Файлы возвращены, но nginx не запустился после отката. Полный backup: /var/backups/x-ui.'; return 1;
@@ -2971,7 +2993,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.26-316.2'
+REVISION = '2026.10.27-319.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -3994,6 +4016,124 @@ choose_rkn_guard() {
     echo
 }
 
+choose_bittorrent_guard() {
+    local answer
+    DEPLOY_BITTORRENT_GUARD=""
+    while true; do
+        echo
+        msg_inf 'Включить защиту от торрент-трафика (VibeHost Guard)?'
+        echo '  Фильтр сигнатур BitTorrent/DHT; зашифрованный трафик может не распознаваться.'
+        echo '  1) Да, установить с автозапуском без ограничения по времени'
+        echo '  2) Нет, существующую защиту не менять'
+        if [[ -t 0 && -r /dev/tty ]]; then
+            read -r -p 'Выбор [1-2]: ' answer </dev/tty || return 1
+        else
+            read -r -p 'Выбор [1-2]: ' answer || return 1
+        fi
+        case "${answer//[[:space:]]/}" in
+            1) DEPLOY_BITTORRENT_GUARD=1; return 0 ;;
+            2) DEPLOY_BITTORRENT_GUARD=0; return 0 ;;
+        esac
+    done
+}
+
+bittorrent_guard_backup() {
+    local cmd path
+    install -d -m 0700 /var/backups/lucx-ui-bittorrent-guard || return 1
+    BITTORRENT_GUARD_BACKUP=$(mktemp -d /var/backups/lucx-ui-bittorrent-guard/$(date +%Y%m%d-%H%M%S)-XXXXXX) || return 1
+    for cmd in iptables ip6tables; do
+        command -v "$cmd-save" >/dev/null 2>&1 || continue
+        (umask 077; "$cmd-save" >"$BITTORRENT_GUARD_BACKUP/$cmd.rules") || return 1
+    done
+    for path in /usr/local/lib/vibehost-guard /etc/vibehost-guard /etc/cron.d/vibehost-guard \
+                /etc/systemd/system/vibehost-guard.service \
+                /etc/systemd/system/vibehost-guard-tick.service /etc/systemd/system/vibehost-guard-tick.timer \
+                "${PREINSTALL_STATE_DIR}/firewall/iptables.v4" "${PREINSTALL_STATE_DIR}/firewall/iptables.v6"; do
+        [[ -e "$path" ]] || continue
+        cp -a --parents "$path" "$BITTORRENT_GUARD_BACKUP/" || return 1
+    done
+    msg_inf "Резервная копия защиты и firewall: $BITTORRENT_GUARD_BACKUP"
+}
+
+remove_bittorrent_guard() (
+    local cmd hook unit
+    for unit in vibehost-guard-tick.timer vibehost-guard-tick.service vibehost-guard.service; do
+        [[ -f "/etc/systemd/system/$unit" ]] || continue
+        systemctl stop "$unit" || return 1
+        systemctl disable "$unit" >/dev/null 2>&1 || return 1
+    done
+    # Share the upstream lock so a running check cannot recreate the chain during removal.
+    exec 9>/run/vibehost-guard.lock || return 1
+    flock -w 60 9 || return 1
+    for cmd in iptables ip6tables; do
+        command -v "$cmd" >/dev/null 2>&1 || continue
+        for hook in INPUT OUTPUT FORWARD DOCKER-USER; do
+            while "$cmd" -w -C "$hook" -j VH_GUARD >/dev/null 2>&1; do
+                "$cmd" -w -D "$hook" -j VH_GUARD || return 1
+            done
+        done
+        if "$cmd" -w -S VH_GUARD >/dev/null 2>&1; then
+            "$cmd" -w -F VH_GUARD || return 1
+            "$cmd" -w -X VH_GUARD || return 1
+        fi
+    done
+    rm -f /etc/systemd/system/vibehost-guard.service \
+          /etc/systemd/system/vibehost-guard-tick.service /etc/systemd/system/vibehost-guard-tick.timer \
+          /etc/cron.d/vibehost-guard || return 1
+    rm -rf -- /usr/local/lib/vibehost-guard /etc/vibehost-guard || return 1
+    systemctl daemon-reload || return 1
+)
+
+install_bittorrent_guard() {
+    local installer log=/var/log/lucx-ui-pro-bittorrent-guard.log existing=0
+    if ! command -v curl >/dev/null 2>&1 || ! command -v iptables >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
+        apt-get update -qq || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl ca-certificates iptables util-linux || return 1
+    fi
+    installer=$(mktemp) || return 1
+    if ! curl -fsSL --proto '=https' --connect-timeout 15 --max-time 180 \
+        https://api.vibehost.net/api/v1/guard/guard.sh -o "$installer" || ! sh -n "$installer"; then
+        rm -f "$installer"
+        msg_err 'Не удалось загрузить корректный установщик VibeHost Guard.'
+        return 1
+    fi
+    bittorrent_guard_backup || { rm -f "$installer"; return 1; }
+    [[ ! -e /usr/local/lib/vibehost-guard/guard.sh ]] || existing=1
+    [[ ! -L "$log" ]] || { rm -f "$installer"; return 1; }
+    # The upstream code is optional enrollment, not an expiry for the local firewall.
+    (umask 077; : >"$log") && chmod 0600 "$log" || { rm -f "$installer"; return 1; }
+    if ! (env -u VH_GUARD_API -u VH_GUARD_LOCKED sh "$installer" </dev/null &&
+          systemctl enable --now vibehost-guard.service vibehost-guard-tick.timer &&
+          systemctl is-active --quiet vibehost-guard.service &&
+          systemctl is-active --quiet vibehost-guard-tick.timer) >"$log" 2>&1; then
+        rm -f "$installer"
+        if (( ! existing )); then remove_bittorrent_guard >>"$log" 2>&1 || true; fi
+        msg_err "Установка защиты завершилась с ошибкой. Журнал: $log; бекап: $BITTORRENT_GUARD_BACKUP"
+        return 1
+    fi
+    rm -f "$installer"
+    msg_ok 'Защита BitTorrent установлена: автозапуск и проверка правил каждые 5 минут; локального срока отключения нет.'
+}
+
+refresh_bittorrent_guard_rules() {
+    [[ -x /usr/local/lib/vibehost-guard/guard.sh ]] || return 0
+    if systemctl is-active --quiet vibehost-guard.service || systemctl is-active --quiet vibehost-guard-tick.timer; then
+        env -u VH_GUARD_API -u VH_GUARD_LOCKED sh /usr/local/lib/vibehost-guard/guard.sh apply || return 1
+    fi
+}
+
+uninstall_bittorrent_guard() {
+    local file
+    bittorrent_guard_backup || return 1
+    remove_bittorrent_guard || { msg_err "Не удалось полностью удалить защиту. Бекап: $BITTORRENT_GUARD_BACKUP"; return 1; }
+    # A later Pro uninstall must not resurrect rules captured before Pro was installed.
+    for file in "${PREINSTALL_STATE_DIR}/firewall/iptables.v"{4,6}; do
+        [[ -f "$file" ]] || continue
+        sed -i '/^:VH_GUARD /d; /^-A VH_GUARD /d; / -j VH_GUARD$/d; / -g VH_GUARD$/d' "$file" || return 1
+    done
+    msg_ok 'Защита BitTorrent удалена. Другие правила firewall и панель не изменены.'
+}
+
 install_rkn_guard_auto_updates() {
     local update_mode="${1:-2}"
     local update_dir="/usr/local/lib/lucx-ui-pro"
@@ -4556,6 +4696,7 @@ uninstall_xui() {
     systemctl daemon-reload 2>/dev/null || true
     msg_inf "Сертификаты сайтов и данные их продления сохраняются."
     restore_preinstall_state || return 1
+    refresh_bittorrent_guard_rules || return 1
     rm -rf -- "$dir"
     msg_ok "Удаление LucX-UI завершено."
 }
@@ -4573,6 +4714,8 @@ is_full_install_request() {
        "${ADGUARD_UNINSTALL}" != "y" &&
        "${RKN_GUARD_ONLY}" != "y" &&
        "${RKN_GUARD_UNINSTALL}" != "y" &&
+       "${BITTORRENT_GUARD_ONLY}" != "y" &&
+       "${BITTORRENT_GUARD_UNINSTALL}" != "y" &&
        "${TG_WEB_PROXY_ONLY}" != "y" &&
        "${TG_WEB_PROXY_UNINSTALL}" != "y" ]]
 }
@@ -4771,7 +4914,7 @@ validate_domains() {
     fi
 }
 # First interactive questions: panel + Reality (before AdGuard / DNS / extra-inbounds).
-if [[ "${UPDATE_COMPAT}" != "y" && "${ADGUARD_ONLY}" != "y" && "${ADGUARD_UNINSTALL}" != "y" && "${RKN_GUARD_ONLY}" != "y" && "${RKN_GUARD_UNINSTALL}" != "y" && "${TG_WEB_PROXY_ONLY}" != "y" && "${TG_WEB_PROXY_UNINSTALL}" != "y" ]]; then
+if [[ "${UPDATE_COMPAT}" != "y" && "${ADGUARD_ONLY}" != "y" && "${ADGUARD_UNINSTALL}" != "y" && "${RKN_GUARD_ONLY}" != "y" && "${RKN_GUARD_UNINSTALL}" != "y" && "${BITTORRENT_GUARD_ONLY}" != "y" && "${BITTORRENT_GUARD_UNINSTALL}" != "y" && "${TG_WEB_PROXY_ONLY}" != "y" && "${TG_WEB_PROXY_UNINSTALL}" != "y" ]]; then
     choose_auto_domains || exit 1
     validate_domains || exit 1
 fi
@@ -6701,6 +6844,7 @@ main() {
     choose_adguard || return 1
     choose_xray_dns || return 1
     choose_rkn_guard || return 1
+    choose_bittorrent_guard || return 1
     choose_extra_inbounds || return 1
     choose_webproxy_domain || return 1
 
@@ -6766,6 +6910,9 @@ main() {
         install_rkn_guard "${DEPLOY_RKN}" || return 1
         touch "$PREINSTALL_STATE_DIR/rkn-installed"
     fi
+    if [[ "${DEPLOY_BITTORRENT_GUARD}" == 1 ]]; then
+        install_bittorrent_guard || return 1
+    fi
 
     if ! systemctl is-enabled --quiet x-ui; then
         systemctl daemon-reload && systemctl enable x-ui.service || return 1
@@ -6790,11 +6937,21 @@ main() {
     # The installation is now complete. Remove the crash-recovery marker before
     # the optional AWG reboot prompt so a manual rerun never repeats cleanup.
     clear_install_in_progress
+    refresh_bittorrent_guard_rules || return 1
     printf '%s\n' "$PRO_COMPAT_REVISION" > "$PREINSTALL_STATE_DIR/compat-revision" || return 1
     if [[ "${DEPLOY_AWG}" == "y" ]]; then
         maybe_reboot_for_awg
     fi
 }
+
+if [[ "${BITTORRENT_GUARD_UNINSTALL}" == y ]]; then
+    uninstall_bittorrent_guard
+    exit $?
+fi
+if [[ "${BITTORRENT_GUARD_ONLY}" == y ]]; then
+    install_bittorrent_guard
+    exit $?
+fi
 
 if ! is_full_install_request && [[ ! -f "$PREINSTALL_STATE_DIR/owned-by-lucx-ui-pro" ]]; then
     msg_err "Component maintenance requires an installation owned by this script."
