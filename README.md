@@ -20,6 +20,7 @@
 | Бэкап | Скрипт резервного копирования |
 | AdGuard Home | Опционально: self-hosted DNS с блокировкой рекламы (DoH) |
 | rkn-guard | Опционально: защита от сканеров РКН |
+| BitTorrent Guard | Опционально: блокировка торрент-трафика по сигнатурам |
 | fail2ban | защита от сканеров |
 
 ---
@@ -105,6 +106,26 @@ curl -fsSL https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main/lucx-ui-la
 
 ---
 
+## BitTorrent Guard (опционально; отдельно или поверх панели)
+
+Устанавливает защиту [VibeHost Guard](https://api.vibehost.net/api/v1/guard/guard.sh) от торрент-трафика. Работает без ключа и регистрации, с автозапуском и без срока отключения.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main/lucx-ui-latest.sh -o /root/lucx-ui-latest.sh && bash /root/lucx-ui-latest.sh -bittorrent-guard y
+```
+
+Повторный запуск переустановит защиту. При обычном `-update y` включённая защита обновляется автоматически.
+
+Удаление:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main/lucx-ui-latest.sh -o /root/lucx-ui-latest.sh && bash /root/lucx-ui-latest.sh -bittorrent-guard-uninstall y
+```
+
+Удаление панели сохраняет защиту. Фильтр распознаёт сигнатуры, блокировка зашифрованного или обфусцированного BitTorrent не гарантируется.
+
+---
+
 ## Telegram WEB-proxy (опционально; поверх панели)
 
 Устанавливает [telegram web-proxy](https://github.com/telegramdesktop/tproxy-server) в панель, выдает ссылку для подключения.
@@ -135,6 +156,8 @@ curl -fsSL https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main/lucx-ui-la
 | `-adguard-uninstall y` | Удаление AdGuard Home |
 | `-rkn-guard y` | Установка rkn-guard |
 | `-rkn-guard-uninstall y` | Удаление rkn-guard |
+| `-bittorrent-guard y` | Установка BitTorrent Guard |
+| `-bittorrent-guard-uninstall y` | Удаление BitTorrent Guard |
 | `-tg-web-proxy y` | Установка tg-web-proxy |
 | `-tg-web-proxy-uninstall y` | Удаление tg-web-proxy |
 
