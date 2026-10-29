@@ -31,6 +31,30 @@ def database(root):
 
 
 class UpdateCompatibility(unittest.TestCase):
+    def test_keepalive_storage_migration_preserves_value_and_detects_loss(self):
+        for value in ('25', '15-25', '0-0', '0', ''):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as folder:
+                root=Path(folder)
+                with closing(database(root)) as db:
+                    db.execute("ALTER TABLE clients ADD COLUMN wg_keep_alive TEXT DEFAULT '0'")
+                    db.execute('UPDATE clients SET wg_keep_alive=?',(value,));db.commit()
+                    state=root/'state.json';state.write_text(json.dumps(compat.protected_state(root)))
+                    db.execute("ALTER TABLE clients ADD COLUMN wg_keep_alive_range TEXT DEFAULT ''")
+                    scalar,ranged=(0,value) if '-' in value else (int(value or 0),'')
+                    db.execute('UPDATE clients SET wg_keep_alive=?,wg_keep_alive_range=?',(scalar,ranged));db.commit()
+                    before='\n'.join(db.iterdump())
+                    compat.preserve_client_flow(root,state);compat.verify_state(root,state)
+                    self.assertEqual(before,'\n'.join(db.iterdump()))
+                    if ranged:
+                        db.execute("UPDATE clients SET wg_keep_alive_range='30-40'")
+                    else:
+                        db.execute('UPDATE clients SET wg_keep_alive=26')
+                    db.commit()
+                    with self.assertRaisesRegex(RuntimeError,'protected client fields'):
+                        compat.preserve_client_flow(root,state)
+                    with self.assertRaisesRegex(RuntimeError,'protected tables: clients'):
+                        compat.verify_state(root,state)
+
     def test_update_scope_allows_native_fields_but_protects_memberships(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)

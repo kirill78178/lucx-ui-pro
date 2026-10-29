@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
-REVISION = '2026.10.28-329.1'
+REVISION = '2026.10.29-330.1'
 # Generated from assets/clash/clash-sub-server.py by sync-embedded.py.
 CLASH_RENDERER_SOURCE = r'''
 #!/usr/bin/env python3
@@ -298,7 +298,7 @@ def protected_state(root, update_only=False):
         for table, fields in (
             ('clients', ('id','email','uuid','sub_id','enable','total','total_gb','expiry_time','limit_ip',
                          'password','auth','flow','security','reverse','wg_private_key','wg_public_key',
-                         'wg_allowed_ips','wg_pre_shared_key','wg_keep_alive','wg_forwarded_ports',
+                         'wg_allowed_ips','wg_pre_shared_key','wg_keep_alive','wg_keep_alive_range','wg_forwarded_ports',
                          'secret','ad_tag','limit_hwid','tg_id','group_name','comment','reset','reset_day',
                          'reset_weekday','reset_max','traffic_reset','traffic_reset_day')),
             ('inbounds', ('id','protocol','port','listen','enable','tag','settings','stream_settings','sniffing','allocate')),
@@ -323,7 +323,11 @@ def protected_state(root, update_only=False):
                     if types.get(key) == 'TEXT' and value is None:
                         row[key] = ''
                     if key == 'wg_keep_alive':
-                        row[key] = str(row[key])
+                        # Native 3.11 splits AWG ranges; compare the effective value across schemas.
+                        row[key] = str(row[key] or 0)
+                        if row[key] == '0' and row.get('wg_keep_alive_range'):
+                            row[key] = str(row['wg_keep_alive_range'])
+                row.pop('wg_keep_alive_range', None)
             if table == 'inbounds':
                 if update_only:
                     rows = [row for row in rows if row['id'] not in managed_ids
